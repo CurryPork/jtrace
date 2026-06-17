@@ -28,6 +28,7 @@ struct ContentView: View {
     @State private var preferences = AppPreferences.load()
     @State private var isPinned = WindowPinStore.load()
     @State private var hostWindow: NSWindow?
+    @State private var selectedSettingsTab: SettingsTab = .watchlist
 
     private var filteredStocks: [Stock] {
         let keyword = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -55,7 +56,7 @@ struct ContentView: View {
     }
 
     private var panelBackgroundColor: Color {
-        Color(red: 0.84, green: 0.88, blue: 0.92).opacity(backgroundOpacity * 0.88)
+        Color(red: 0.94, green: 0.97, blue: 1.0).opacity(backgroundOpacity * 0.36)
     }
 
     private var panelShadowColor: Color {
@@ -77,7 +78,8 @@ struct ContentView: View {
                     secids: stockSecids,
                     preferences: preferences,
                     stockNamesByCode: stockNamesByCode,
-                    textOpacity: textOpacity
+                    textOpacity: textOpacity,
+                    selectedTab: $selectedSettingsTab
                 ) { updatedSecids in
                     stockSecids = updatedSecids
                     StockCodeStore.save(updatedSecids)
@@ -91,7 +93,7 @@ struct ContentView: View {
                     }
                 }
             } else {
-                HStack(spacing: 8) {
+                HStack(spacing: 10) {
                     SearchBar(
                         searchText: $searchText,
                         backgroundOpacity: backgroundOpacity,
@@ -104,18 +106,10 @@ struct ContentView: View {
                         }
                     }
                     .disabled(isRefreshing)
-
-                    IconButton(systemName: isPinned ? "pin.fill" : "pin") {
-                        isPinned.toggle()
-                    }
-
-                    IconButton(systemName: "gearshape") {
-                        isShowingSettings = true
-                    }
                 }
-                .padding(.top, 8)
-                .padding(.horizontal, 20)
-                .padding(.bottom, 6)
+                .padding(.horizontal, 6)
+                .padding(.top, 6)
+                .padding(.bottom, 4)
 
                 if let statusMessage {
                     Text(statusMessage)
@@ -142,32 +136,22 @@ struct ContentView: View {
                     .padding(.horizontal, 20)
                     .padding(.bottom, 18)
                 } else {
-                    ScrollView {
-                        LazyVStack(spacing: 0) {
-                            ForEach(filteredStocks) { stock in
-                                StockRow(
-                                    stock: stock,
-                                    isHighlighted: stock.id == selectedStockID,
-                                    backgroundOpacity: backgroundOpacity,
-                                    textOpacity: textOpacity
-                                )
-                                    .contentShape(Rectangle())
-                                    .onTapGesture {
-                                        selectedStockID = stock.id
-                                    }
-                            }
-                        }
-                        .padding(.horizontal, 12)
-                        .padding(.top, 6)
-                        .padding(.bottom, 14)
-                        .background(ScrollViewConfigurator())
-                    }
+                    StockTableView(
+                        stocks: filteredStocks,
+                        selectedStockID: $selectedStockID,
+                        backgroundOpacity: backgroundOpacity,
+                        textOpacity: textOpacity
+                    )
+                    .padding(.horizontal, 6)
+                    .padding(.top, 4)
+                    .padding(.bottom, 8)
                 }
             }
         }
-        .frame(width: 268, height: 435)
+        .frame(minWidth: 268, idealWidth: 310, minHeight: 435, idealHeight: 435)
         .background(hitTestBackgroundColor)
         .background(panelBackgroundColor)
+        .background(PanelGlassBackground(opacity: backgroundOpacity))
         .clipShape(BottomRoundedRectangle(radius: 17))
         .contentShape(BottomRoundedRectangle(radius: 17))
         .shadow(color: panelShadowColor, radius: 14, x: 0, y: 8)
@@ -176,6 +160,19 @@ struct ContentView: View {
             applyPinnedState()
             applyWindowAppearance()
         })
+        .background(
+            TitlebarControlsInstaller(
+                isVisible: !isShowingSettings,
+                isPinned: isPinned,
+                textOpacity: textOpacity,
+                onShowSettings: {
+                    isShowingSettings = true
+                },
+                onTogglePin: {
+                    isPinned.toggle()
+                }
+            )
+        )
         .task {
             await loadStocks()
         }
@@ -254,7 +251,7 @@ struct ContentView: View {
                 return
             }
 
-            if !isShowingSettings {
+            if !isShowingSettings && TradingSession.allowsAutoRefresh() {
                 await loadStocks()
             }
         }
@@ -286,8 +283,13 @@ struct ContentView: View {
         window.hasShadow = true
         window.isMovableByWindowBackground = false
         window.title = "韭 迹"
-        window.titlebarAppearsTransparent = true
-        window.styleMask.insert(.fullSizeContentView)
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = false
+        window.titlebarSeparatorStyle = .automatic
+        window.styleMask.remove(.fullSizeContentView)
+        window.styleMask.insert(.resizable)
+        window.minSize = NSSize(width: 268, height: 435)
+        window.contentMinSize = NSSize(width: 268, height: 435)
         window.invalidateShadow()
     }
 }
@@ -319,6 +321,35 @@ private struct AppPreferences {
         UserDefaults.standard.set(preferences.textOpacity, forKey: textOpacityKey)
         UserDefaults.standard.set(preferences.backgroundOpacity, forKey: backgroundOpacityKey)
         UserDefaults.standard.set(max(preferences.refreshSeconds, 10), forKey: refreshSecondsKey)
+    }
+}
+
+private enum TradingSession {
+    private static var calendar: Calendar = {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
+        return calendar
+    }()
+
+    static func allowsAutoRefresh(at date: Date = Date()) -> Bool {
+        let components = calendar.dateComponents([.weekday, .hour, .minute, .second], from: date)
+
+        guard let weekday = components.weekday,
+              let hour = components.hour,
+              let minute = components.minute,
+              let second = components.second,
+              (2...6).contains(weekday) else {
+            return false
+        }
+
+        let secondsFromStartOfDay = hour * 3600 + minute * 60 + second
+        let morningOpen = 9 * 3600 + 15 * 60
+        let morningClose = 11 * 3600 + 30 * 60
+        let afternoonOpen = 13 * 3600
+        let afternoonClose = 15 * 3600
+
+        return (morningOpen...morningClose).contains(secondsFromStartOfDay)
+            || (afternoonOpen...afternoonClose).contains(secondsFromStartOfDay)
     }
 }
 
@@ -587,11 +618,11 @@ private struct SearchBar: View {
     let textOpacity: Double
 
     private var fillColor: Color {
-        Color(red: 0.92, green: 0.95, blue: 0.98).opacity(max(0.001, 0.10 + backgroundOpacity * 0.45))
+        Color.white.opacity(0.08 + backgroundOpacity * 0.30)
     }
 
     private var strokeColor: Color {
-        Color(red: 0.56, green: 0.62, blue: 0.70).opacity(0.28 + backgroundOpacity * 0.55)
+        Color(red: 0.54, green: 0.61, blue: 0.70).opacity(0.22 + backgroundOpacity * 0.34)
     }
 
     var body: some View {
@@ -619,12 +650,146 @@ private struct SearchBar: View {
         }
         .frame(height: 31)
         .padding(.horizontal, 12)
-        .background(fillColor)
-        .overlay {
-            RoundedRectangle(cornerRadius: 11, style: .continuous)
-                .stroke(strokeColor, lineWidth: 1)
+        .background {
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .fill(fillColor)
         }
-        .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .stroke(strokeColor, lineWidth: 0.8)
+        }
+        .overlay(alignment: .top) {
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .stroke(Color.white.opacity(0.10 + backgroundOpacity * 0.18), lineWidth: 0.6)
+                .blendMode(.screen)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+    }
+}
+
+private struct MainTitleToolbar: View {
+    let textOpacity: Double
+    let isRefreshing: Bool
+    let isPinned: Bool
+    let onRefresh: () -> Void
+    let onTogglePin: () -> Void
+    let onShowSettings: () -> Void
+
+    var body: some View {
+        ZStack {
+            Text("韭 迹")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(Color(red: 0.16, green: 0.16, blue: 0.16).opacity(textOpacity))
+                .allowsHitTesting(false)
+
+            HStack(spacing: 12) {
+                Spacer()
+
+                IconButton(systemName: "arrow.clockwise", isSpinning: isRefreshing, action: onRefresh)
+                    .disabled(isRefreshing)
+
+                IconButton(systemName: isPinned ? "pin.fill" : "pin", action: onTogglePin)
+
+                IconButton(systemName: "gearshape", action: onShowSettings)
+            }
+            .padding(.leading, 88)
+            .padding(.trailing, 18)
+        }
+        .frame(height: 52)
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(Color(red: 0.70, green: 0.76, blue: 0.82).opacity(0.22))
+                .frame(height: 1)
+        }
+    }
+}
+
+private struct SettingsTitleToolbar: View {
+    @Binding var selectedTab: SettingsTab
+    let textOpacity: Double
+    let onClose: () -> Void
+
+    var body: some View {
+        GeometryReader { proxy in
+            let unit = proxy.size.width / 5
+
+            HStack(spacing: 0) {
+                settingsHeaderButton(width: unit, action: {
+                    onClose()
+                }) {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(Color(red: 0.16, green: 0.16, blue: 0.16).opacity(textOpacity))
+                }
+
+                settingsTabButton(
+                    tab: .watchlist,
+                    width: unit * 2
+                )
+
+                settingsTabButton(
+                    tab: .preferences,
+                    width: unit * 2
+                )
+            }
+        }
+        .padding(.horizontal, 6)
+        .padding(.top, 6)
+        .padding(.bottom, 4)
+        .frame(height: 42)
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(Color(red: 0.70, green: 0.76, blue: 0.82).opacity(0.22))
+                .frame(height: 1)
+        }
+    }
+
+    private func settingsHeaderButton<Label: View>(
+        width: CGFloat,
+        action: @escaping () -> Void,
+        @ViewBuilder label: () -> Label
+    ) -> some View {
+        Button(action: action) {
+            label()
+                .frame(width: width, height: 31)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func settingsTabButton(tab: SettingsTab, width: CGFloat) -> some View {
+        settingsHeaderButton(width: width, action: {
+            selectedTab = tab
+        }) {
+                Text(tab.rawValue)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(
+                        selectedTab == tab
+                            ? Color.white.opacity(textOpacity)
+                            : Color(red: 0.34, green: 0.39, blue: 0.46).opacity(textOpacity)
+                    )
+                .frame(width: max(width - 6, 0), height: 31)
+                .background {
+                    if selectedTab == tab {
+                        RoundedRectangle(cornerRadius: 7, style: .continuous)
+                            .fill(
+                                LinearGradient(
+                                    colors: [
+                                        Color(red: 0.34, green: 0.54, blue: 0.68),
+                                        Color(red: 0.25, green: 0.42, blue: 0.56)
+                                    ],
+                                    startPoint: .topLeading,
+                                    endPoint: .bottomTrailing
+                                )
+                            )
+                            .overlay {
+                                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                    .stroke(Color.white.opacity(0.22), lineWidth: 0.7)
+                            }
+                            .shadow(color: Color(red: 0.20, green: 0.32, blue: 0.44).opacity(0.18), radius: 5, x: 0, y: 2)
+                    }
+                }
+        }
     }
 }
 
@@ -710,48 +875,148 @@ private struct WindowAccessor: NSViewRepresentable {
     }
 }
 
+private struct PanelGlassBackground: NSViewRepresentable {
+    let opacity: Double
+
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let view = NSVisualEffectView()
+        view.material = .popover
+        view.blendingMode = .behindWindow
+        view.state = .active
+        view.wantsLayer = true
+        view.layer?.cornerRadius = 17
+        view.layer?.masksToBounds = true
+        view.alphaValue = max(0, min(opacity, 1))
+        return view
+    }
+
+    func updateNSView(_ nsView: NSVisualEffectView, context: Context) {
+        nsView.alphaValue = max(0, min(opacity, 1))
+        nsView.material = .popover
+        nsView.blendingMode = .behindWindow
+        nsView.state = .active
+        nsView.layer?.cornerRadius = 17
+        nsView.layer?.masksToBounds = true
+    }
+}
+
+private struct TitlebarControlsInstaller: NSViewRepresentable {
+    let isVisible: Bool
+    let isPinned: Bool
+    let textOpacity: Double
+    let onShowSettings: () -> Void
+    let onTogglePin: () -> Void
+
+    func makeNSView(context: Context) -> NSView {
+        NSView()
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        DispatchQueue.main.async {
+            guard let window = nsView.window else {
+                return
+            }
+
+            let key = ObjectIdentifier(window)
+
+            guard isVisible else {
+                TitlebarAccessoryRegistry.removeAccessory(for: window, key: key)
+                return
+            }
+
+            let controls = TitlebarAccessoryControls(
+                isPinned: isPinned,
+                textOpacity: textOpacity,
+                onShowSettings: onShowSettings,
+                onTogglePin: onTogglePin
+            )
+
+            if let controller = TitlebarAccessoryRegistry.controllers[key],
+               let hostingView = controller.view as? NSHostingView<TitlebarAccessoryControls> {
+                hostingView.rootView = controls
+                return
+            }
+
+            let hostingView = NSHostingView(rootView: controls)
+            hostingView.frame = NSRect(x: 0, y: 0, width: 68, height: 28)
+            hostingView.setFrameSize(NSSize(width: 68, height: 28))
+
+            let controller = NSTitlebarAccessoryViewController()
+            controller.view = hostingView
+            controller.layoutAttribute = .right
+
+            window.addTitlebarAccessoryViewController(controller)
+            TitlebarAccessoryRegistry.controllers[key] = controller
+        }
+    }
+}
+
+private struct TitlebarAccessoryControls: View {
+    let isPinned: Bool
+    let textOpacity: Double
+    let onShowSettings: () -> Void
+    let onTogglePin: () -> Void
+
+    var body: some View {
+        HStack(spacing: 14) {
+            Button(action: onShowSettings) {
+                Image(systemName: "gearshape")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Color(red: 0.42, green: 0.42, blue: 0.42).opacity(textOpacity))
+                    .frame(width: 20, height: 24)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("设置")
+
+            Button(action: onTogglePin) {
+                Image(systemName: isPinned ? "pin.fill" : "pin")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Color(red: 0.42, green: 0.42, blue: 0.42).opacity(textOpacity))
+                    .frame(width: 20, height: 24)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(isPinned ? "取消置顶" : "置顶")
+        }
+        .frame(width: 68, height: 28)
+        .background(Color.clear)
+    }
+}
+
+private enum TitlebarAccessoryRegistry {
+    static var controllers: [ObjectIdentifier: NSTitlebarAccessoryViewController] = [:]
+
+    static func removeAccessory(for window: NSWindow, key: ObjectIdentifier) {
+        guard let controller = controllers.removeValue(forKey: key) else {
+            return
+        }
+
+        if let index = window.titlebarAccessoryViewControllers.firstIndex(of: controller) {
+            window.removeTitlebarAccessoryViewController(at: index)
+        }
+    }
+}
+
 private struct SettingsView: View {
     let secids: [String]
     let preferences: AppPreferences
     let stockNamesByCode: [String: String]
     let textOpacity: Double
+    @Binding var selectedTab: SettingsTab
     let onChange: ([String]) -> Void
     let onPreferencesChange: (AppPreferences) -> Void
     let onClose: () -> Void
 
-    @State private var selectedTab: SettingsTab = .watchlist
     @State private var codeText = ""
 
     var body: some View {
         VStack(spacing: 0) {
-            ZStack {
-                Text("设 置")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(Color(red: 0.16, green: 0.16, blue: 0.16).opacity(textOpacity))
-                    .frame(maxWidth: .infinity)
-
-                HStack {
-                    Button {
-                        onClose()
-                    } label: {
-                        Image(systemName: "chevron.left")
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(Color(red: 0.16, green: 0.16, blue: 0.16).opacity(textOpacity))
-                            .frame(width: 36, height: 36)
-                            .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-
-                    Spacer()
-                }
-            }
-            .frame(height: 36)
-            .padding(.top, 12)
-            .padding(.horizontal, 8)
-
-            SettingsTabControl(selectedTab: $selectedTab, textOpacity: textOpacity)
-                .padding(.top, 14)
-                .padding(.horizontal, 16)
+            SettingsTitleToolbar(
+                selectedTab: $selectedTab,
+                textOpacity: textOpacity,
+                onClose: onClose
+            )
 
             if selectedTab == .watchlist {
                 WatchlistSettingsView(
@@ -808,7 +1073,7 @@ private struct SettingsTabControl: View {
                         .foregroundStyle(
                             selectedTab == tab
                                 ? Color.white.opacity(textOpacity)
-                                : Color(red: 0.42, green: 0.42, blue: 0.42).opacity(textOpacity)
+                                : Color(red: 0.34, green: 0.39, blue: 0.46).opacity(textOpacity)
                         )
                         .frame(maxWidth: .infinity)
                         .frame(height: 28)
@@ -816,7 +1081,16 @@ private struct SettingsTabControl: View {
                         .background {
                             if selectedTab == tab {
                                 RoundedRectangle(cornerRadius: 7, style: .continuous)
-                                    .fill(Color(red: 0.20, green: 0.53, blue: 0.48))
+                                    .fill(
+                                        LinearGradient(
+                                            colors: [
+                                                Color(red: 0.34, green: 0.54, blue: 0.68),
+                                                Color(red: 0.25, green: 0.42, blue: 0.56)
+                                            ],
+                                            startPoint: .topLeading,
+                                            endPoint: .bottomTrailing
+                                        )
+                                    )
                             } else {
                                 Color.clear
                             }
@@ -826,7 +1100,7 @@ private struct SettingsTabControl: View {
             }
         }
         .padding(3)
-        .background(Color(red: 0.86, green: 0.90, blue: 0.94).opacity(0.55))
+        .background(Color.white.opacity(0.20))
         .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
     }
 }
@@ -841,11 +1115,11 @@ private struct WatchlistSettingsView: View {
     let onRemove: (String) -> Void
 
     private var inputFillColor: Color {
-        Color(red: 0.92, green: 0.95, blue: 0.98).opacity(max(0.001, 0.10 + backgroundOpacity * 0.45))
+        Color.white.opacity(0.08 + backgroundOpacity * 0.30)
     }
 
     private var strokeColor: Color {
-        Color(red: 0.56, green: 0.62, blue: 0.70).opacity(0.28 + backgroundOpacity * 0.55)
+        Color(red: 0.54, green: 0.61, blue: 0.70).opacity(0.22 + backgroundOpacity * 0.34)
     }
 
     private var dividerColor: Color {
@@ -866,18 +1140,27 @@ private struct WatchlistSettingsView: View {
                     .textFieldStyle(.plain)
                     .frame(height: 31)
                     .padding(.horizontal, 12)
-                    .background(inputFillColor)
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .stroke(strokeColor, lineWidth: 1)
+                    .background {
+                        RoundedRectangle(cornerRadius: 9, style: .continuous)
+                            .fill(inputFillColor)
                     }
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 9, style: .continuous)
+                            .stroke(strokeColor, lineWidth: 0.8)
+                    }
+                    .overlay(alignment: .top) {
+                        RoundedRectangle(cornerRadius: 9, style: .continuous)
+                            .stroke(Color.white.opacity(0.10 + backgroundOpacity * 0.18), lineWidth: 0.6)
+                            .blendMode(.screen)
+                    }
+                    .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
 
                 Button {
                     onAdd()
                 } label: {
                     Image(systemName: "plus")
                         .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(Color(red: 0.20, green: 0.53, blue: 0.48))
+                        .foregroundStyle(Color(red: 0.30, green: 0.49, blue: 0.64).opacity(textOpacity))
                         .frame(width: 28, height: 31)
                 }
                 .buttonStyle(.plain)
@@ -1122,6 +1405,176 @@ private struct StockRow: View {
                     .padding(.leading, 12)
             }
         }
+    }
+}
+
+private struct StockTableView: View {
+    let stocks: [Stock]
+    @Binding var selectedStockID: String?
+    let backgroundOpacity: Double
+    let textOpacity: Double
+
+    private var borderColor: Color {
+        Color(red: 0.72, green: 0.77, blue: 0.82).opacity(0.16 + backgroundOpacity * 0.26)
+    }
+
+    private var headerColor: Color {
+        Color(red: 0.96, green: 0.98, blue: 1.0).opacity(0.06 + backgroundOpacity * 0.18)
+    }
+
+    var body: some View {
+        GeometryReader { proxy in
+            let widths = columnWidths(for: proxy.size.width)
+
+            VStack(spacing: 0) {
+                StockTableHeader(
+                    widths: widths,
+                    borderColor: borderColor,
+                    backgroundColor: headerColor,
+                    textOpacity: textOpacity
+                )
+
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        ForEach(stocks) { stock in
+                            StockTableRow(
+                                stock: stock,
+                                widths: widths,
+                                isSelected: selectedStockID == stock.id,
+                                borderColor: borderColor,
+                                backgroundOpacity: backgroundOpacity,
+                                textOpacity: textOpacity
+                            )
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                selectedStockID = stock.id
+                            }
+                        }
+                    }
+                    .background(ScrollViewConfigurator())
+                }
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: 2, style: .continuous)
+                    .stroke(borderColor, lineWidth: 0.6)
+            }
+        }
+    }
+
+    private func columnWidths(for totalWidth: CGFloat) -> StockTableColumnWidths {
+        let safeWidth = max(totalWidth, 220)
+        let nameWidth = max(92, safeWidth * 0.38)
+        let priceWidth = max(74, safeWidth * 0.30)
+        let changeWidth = max(78, safeWidth - nameWidth - priceWidth)
+
+        return StockTableColumnWidths(name: nameWidth, price: priceWidth, change: changeWidth)
+    }
+}
+
+private struct StockTableColumnWidths {
+    let name: CGFloat
+    let price: CGFloat
+    let change: CGFloat
+}
+
+private struct StockTableHeader: View {
+    let widths: StockTableColumnWidths
+    let borderColor: Color
+    let backgroundColor: Color
+    let textOpacity: Double
+
+    var body: some View {
+        HStack(spacing: 0) {
+            tableHeaderCell("名称", width: widths.name)
+            tableHeaderCell("价格", width: widths.price)
+            tableHeaderCell("涨跌幅", width: widths.change)
+        }
+        .frame(height: 31)
+        .background(backgroundColor)
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(borderColor)
+                .frame(height: 0.6)
+        }
+    }
+
+    private func tableHeaderCell(_ title: String, width: CGFloat) -> some View {
+        Text(title)
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundStyle(Color(red: 0.48, green: 0.48, blue: 0.48).opacity(textOpacity))
+            .lineLimit(1)
+            .frame(width: width, height: 31)
+            .overlay(alignment: .trailing) {
+                Rectangle()
+                    .fill(borderColor)
+                    .frame(width: 0.6)
+            }
+    }
+}
+
+private struct StockTableRow: View {
+    let stock: Stock
+    let widths: StockTableColumnWidths
+    let isSelected: Bool
+    let borderColor: Color
+    let backgroundOpacity: Double
+    let textOpacity: Double
+
+    private var isUp: Bool {
+        stock.change >= 0
+    }
+
+    private var changeText: String {
+        "\(String(format: "%.2f", stock.change))%"
+    }
+
+    private var valueColor: Color {
+        isUp
+            ? Color(red: 1.0, green: 0.34, blue: 0.34)
+            : Color(red: 0.23, green: 0.68, blue: 0.34)
+    }
+
+    private var nameColor: Color {
+        Color(red: 0.34, green: 0.34, blue: 0.34)
+    }
+
+    private var selectedColor: Color {
+        Color(red: 0.90, green: 0.93, blue: 0.96).opacity(0.08 + backgroundOpacity * 0.22)
+    }
+
+    var body: some View {
+        HStack(spacing: 0) {
+            tableCell(stock.name, width: widths.name, color: nameColor, weight: .medium, design: .default)
+            tableCell(stock.price, width: widths.price, color: valueColor, weight: .regular, design: .rounded)
+            tableCell(changeText, width: widths.change, color: valueColor, weight: .regular, design: .rounded)
+        }
+        .frame(height: 28)
+        .background(isSelected ? selectedColor : Color.clear)
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(borderColor)
+                .frame(height: 0.6)
+        }
+    }
+
+    private func tableCell(
+        _ text: String,
+        width: CGFloat,
+        color: Color,
+        weight: Font.Weight,
+        design: Font.Design
+    ) -> some View {
+        Text(text)
+            .font(.system(size: 12, weight: weight, design: design))
+            .foregroundStyle(color.opacity(textOpacity))
+            .lineLimit(1)
+            .minimumScaleFactor(0.72)
+            .frame(width: width, height: 28)
+            .overlay(alignment: .trailing) {
+                Rectangle()
+                    .fill(borderColor)
+                    .frame(width: 0.6)
+            }
     }
 }
 
