@@ -285,6 +285,7 @@ struct ContentView: View {
         window.backgroundColor = .clear
         window.hasShadow = true
         window.isMovableByWindowBackground = false
+        window.title = "韭 迹"
         window.titlebarAppearsTransparent = true
         window.styleMask.insert(.fullSizeContentView)
         window.invalidateShadow()
@@ -723,26 +724,28 @@ private struct SettingsView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                Button {
-                    onClose()
-                } label: {
-                    HStack(spacing: 8) {
+            ZStack {
+                Text("设 置")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(Color(red: 0.16, green: 0.16, blue: 0.16).opacity(textOpacity))
+                    .frame(maxWidth: .infinity)
+
+                HStack {
+                    Button {
+                        onClose()
+                    } label: {
                         Image(systemName: "chevron.left")
                             .font(.system(size: 13, weight: .semibold))
-
-                        Text("设置")
-                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(Color(red: 0.16, green: 0.16, blue: 0.16).opacity(textOpacity))
+                            .frame(width: 36, height: 36)
+                            .contentShape(Rectangle())
                     }
-                    .foregroundStyle(Color(red: 0.16, green: 0.16, blue: 0.16).opacity(textOpacity))
-                    .frame(height: 36)
-                    .padding(.horizontal, 8)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
+                    .buttonStyle(.plain)
 
-                Spacer()
+                    Spacer()
+                }
             }
+            .frame(height: 36)
             .padding(.top, 12)
             .padding(.horizontal, 8)
 
