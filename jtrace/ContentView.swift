@@ -290,6 +290,13 @@ struct ContentView: View {
         window.styleMask.insert(.resizable)
         window.minSize = NSSize(width: 268, height: 435)
         window.contentMinSize = NSSize(width: 268, height: 435)
+
+        if window.delegate == nil {
+            let clamp = WindowSizeClamp(minSize: NSSize(width: 268, height: 435))
+            window.delegate = clamp
+            objc_setAssociatedObject(window, &WindowSizeClamp.associatedKey, clamp, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+        }
+
         window.invalidateShadow()
     }
 }
@@ -1610,6 +1617,26 @@ private struct ChangeBadge: View {
         )
         .clipShape(Capsule())
     }
+}
+
+// MARK: - Window Size Clamp
+
+private final class WindowSizeClamp: NSObject, NSWindowDelegate {
+    static var associatedKey: UInt8 = 0
+
+    let minSize: NSSize
+
+    init(minSize: NSSize) {
+        self.minSize = minSize
+    }
+
+    func windowWillResize(_ sender: NSWindow, to frameSize: NSSize) -> NSSize {
+        NSSize(
+            width: max(frameSize.width, minSize.width),
+            height: max(frameSize.height, minSize.height)
+        )
+    }
+
 }
 
 #Preview {
