@@ -3,3 +3,5 @@ build/
 dist/
 tmp_icon.iconset/
 packaging/
+*.xcuserstate
+xcuserdata/
